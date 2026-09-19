@@ -11,7 +11,7 @@ const app = express();
 const PORT = process.env.PORT || 10000;
 
 /* =====================================
-   1. RAZORPAY LIVE KEYS
+   RAZORPAY LIVE CONFIGURATION
 ===================================== */
 
 const KEY_ID =
@@ -25,13 +25,13 @@ const WEBHOOK_SECRET =
 
 if (!KEY_ID || !KEY_SECRET) {
   throw new Error(
-    "Razorpay keys missing in Render Environment"
+    "Razorpay keys missing in Render"
   );
 }
 
 if (!KEY_ID.startsWith("rzp_live_")) {
   throw new Error(
-    "Please configure Razorpay LIVE keys"
+    "Please use Razorpay LIVE keys"
   );
 }
 
@@ -41,7 +41,7 @@ const razorpay = new Razorpay({
 });
 
 /* =====================================
-   2. CORS CONFIGURATION
+   CORS FIX
 ===================================== */
 
 const allowedOrigins = [
@@ -51,35 +51,27 @@ const allowedOrigins = [
 
 if (process.env.FRONTEND_URL) {
 
-  const extraOrigins =
-    process.env.FRONTEND_URL
+  allowedOrigins.push(
+    ...process.env.FRONTEND_URL
       .split(",")
       .map(url =>
         url.trim().replace(/\/$/, "")
       )
-      .filter(Boolean);
-
-  allowedOrigins.push(...extraOrigins);
+      .filter(Boolean)
+  );
 
 }
 
-const corsOptions = {
+app.use(cors({
 
-  origin: function(origin, callback) {
+  origin(origin, callback) {
 
     if (
       !origin ||
       allowedOrigins.includes(origin)
     ) {
-
       return callback(null, true);
-
     }
-
-    console.log(
-      "CORS blocked:",
-      origin
-    );
 
     return callback(
       new Error("CORS not allowed")
@@ -100,18 +92,14 @@ const corsOptions = {
 
   optionsSuccessStatus: 204
 
-};
-
-app.use(cors(corsOptions));
+}));
 
 /* =====================================
-   3. RAZORPAY WEBHOOK
-
-   Must come before express.json()
+   WEBHOOK
+   BEFORE express.json()
 ===================================== */
 
 app.post(
-
   "/api/razorpay/webhook",
 
   express.raw({
@@ -123,13 +111,7 @@ app.post(
     try {
 
       if (!WEBHOOK_SECRET) {
-
-        console.error(
-          "Webhook secret missing"
-        );
-
         return res.sendStatus(503);
-
       }
 
       const signature =
@@ -139,19 +121,16 @@ app.post(
         typeof signature !== "string" ||
         !/^[a-f0-9]{64}$/i.test(signature)
       ) {
-
         return res.sendStatus(400);
-
       }
 
-      const expectedSignature =
-        crypto
-          .createHmac(
-            "sha256",
-            WEBHOOK_SECRET
-          )
-          .update(req.body)
-          .digest("hex");
+      const expected = crypto
+        .createHmac(
+          "sha256",
+          WEBHOOK_SECRET
+        )
+        .update(req.body)
+        .digest("hex");
 
       const valid =
         crypto.timingSafeEqual(
@@ -162,20 +141,14 @@ app.post(
           ),
 
           Buffer.from(
-            expectedSignature,
+            expected,
             "hex"
           )
 
         );
 
       if (!valid) {
-
-        console.error(
-          "Invalid webhook signature"
-        );
-
         return res.sendStatus(400);
-
       }
 
       const event = JSON.parse(
@@ -185,79 +158,41 @@ app.post(
       const payment =
         event.payload?.payment?.entity;
 
-      const refund =
-        event.payload?.refund?.entity;
+      if (
+        event.event === "payment.captured"
+      ) {
 
-      switch (event.event) {
-
-        case "payment.captured":
-
-          console.log(
-            "CEZOO PAYMENT CAPTURED",
-            {
-              payment_id:
-                payment?.id,
-
-              order_id:
-                payment?.order_id,
-
-              amount:
-                payment?.amount / 100,
-
-              currency:
-                payment?.currency,
-
-              method:
-                payment?.method
-            }
-          );
-
-          break;
-
-        case "payment.failed":
-
-          console.log(
-            "CEZOO PAYMENT FAILED",
-            {
-              payment_id:
-                payment?.id,
-
-              order_id:
-                payment?.order_id
-            }
-          );
-
-          break;
-
-        case "refund.created":
-
-          console.log(
-            "CEZOO REFUND CREATED",
-            {
-              refund_id:
-                refund?.id,
-
-              payment_id:
-                refund?.payment_id
-            }
-          );
-
-          break;
-
-        default:
-
-          console.log(
-            "Razorpay event:",
-            event.event
-          );
+        console.log(
+          "PAYMENT CAPTURED",
+          {
+            payment_id: payment?.id,
+            order_id: payment?.order_id,
+            amount: payment?.amount / 100,
+            method: payment?.method
+          }
+        );
 
       }
 
-      return res.status(200).json({
+      if (
+        event.event === "payment.failed"
+      ) {
+
+        console.log(
+          "PAYMENT FAILED",
+          {
+            payment_id: payment?.id,
+            order_id: payment?.order_id
+          }
+        );
+
+      }
+
+      return res.json({
         success: true
       });
 
-    } catch(error) {
+    } catch (error) {
 
       console.error(
         "Webhook error:",
@@ -269,11 +204,10 @@ app.post(
     }
 
   }
-
 );
 
 /* =====================================
-   4. JSON MIDDLEWARE
+   JSON MIDDLEWARE
 ===================================== */
 
 app.use(
@@ -283,74 +217,7 @@ app.use(
 );
 
 /* =====================================
-   5. PRODUCT CATALOG
-
-   ₹1 product included automatically.
-
-   Add actual products using
-   PRODUCT_CATALOG_JSON in Render.
-===================================== */
-
-let PRODUCT_CATALOG = {
-
-  payment_1: {
-
-    name: "CEZOO ₹1 Payment",
-
-    price_paise: 100
-
-  }
-
-};
-
-if (process.env.PRODUCT_CATALOG_JSON) {
-
-  try {
-
-    const additionalProducts =
-      JSON.parse(
-        process.env.PRODUCT_CATALOG_JSON
-      );
-
-    if (
-      !additionalProducts ||
-      typeof additionalProducts !== "object" ||
-      Array.isArray(additionalProducts)
-    ) {
-
-      throw new Error(
-        "Product catalog must be an object"
-      );
-
-    }
-
-    PRODUCT_CATALOG = {
-
-      ...additionalProducts,
-
-      payment_1: {
-
-        name: "CEZOO ₹1 Payment",
-
-        price_paise: 100
-
-      }
-
-    };
-
-  } catch(error) {
-
-    throw new Error(
-      "Invalid PRODUCT_CATALOG_JSON: " +
-      error.message
-    );
-
-  }
-
-}
-
-/* =====================================
-   6. HEALTH CHECK
+   HEALTH CHECK
 ===================================== */
 
 app.get("/", (req, res) => {
@@ -361,42 +228,24 @@ app.get("/", (req, res) => {
 
     application: "CEZOO",
 
-    service:
-      "Razorpay Live Payment Backend",
-
     mode: "LIVE",
 
-    status: "running"
+    status: "running",
+
+    payment:
+      "Dynamic Amount Enabled"
 
   });
 
 });
 
-app.get(
-  "/api/health",
-  (req, res) => {
-
-    res.json({
-
-      success: true,
-
-      status: "running",
-
-      mode: "LIVE"
-
-    });
-
-  }
-);
-
 /* =====================================
-   7. CREATE RAZORPAY ORDER
+   CREATE DYNAMIC PAYMENT ORDER
 
    POST /api/razorpay/create-order
 ===================================== */
 
 app.post(
-
   "/api/razorpay/create-order",
 
   async (req, res) => {
@@ -404,19 +253,18 @@ app.post(
     try {
 
       const {
-
-        items,
-
+        amount,
         customer_name,
-
         customer_phone
-
       } = req.body;
 
+      /* Validate amount in rupees */
+
       if (
-        !Array.isArray(items) ||
-        items.length === 0 ||
-        items.length > 100
+        typeof amount !== "number" ||
+        !Number.isFinite(amount) ||
+        amount < 1 ||
+        amount > 1000000
       ) {
 
         return res.status(400).json({
@@ -424,115 +272,21 @@ app.post(
           success: false,
 
           message:
-            "Valid product items required"
+            "Enter a valid amount between ₹1 and ₹10,00,000"
 
         });
 
       }
 
-      let totalPaise = 0;
+      /* Convert rupees to paise */
 
-      const validatedItems = [];
-
-      for (const item of items) {
-
-        if (
-          !item ||
-          typeof item !== "object"
-        ) {
-
-          return res.status(400).json({
-
-            success: false,
-
-            message:
-              "Invalid product item"
-
-          });
-
-        }
-
-        const id =
-          String(item.id || "");
-
-        const quantity =
-          item.quantity;
-
-        const product =
-          Object.prototype.hasOwnProperty.call(
-            PRODUCT_CATALOG,
-            id
-          )
-            ? PRODUCT_CATALOG[id]
-            : null;
-
-        if (!product) {
-
-          return res.status(400).json({
-
-            success: false,
-
-            message:
-              "Product not found: " + id
-
-          });
-
-        }
-
-        if (
-          !Number.isSafeInteger(quantity) ||
-          quantity < 1 ||
-          quantity > 100
-        ) {
-
-          return res.status(400).json({
-
-            success: false,
-
-            message:
-              "Invalid quantity"
-
-          });
-
-        }
-
-        const pricePaise =
-          product.price_paise;
-
-        if (
-          !Number.isSafeInteger(pricePaise) ||
-          pricePaise < 1
-        ) {
-
-          throw new Error(
-            "Invalid server product price"
-          );
-
-        }
-
-        totalPaise +=
-          pricePaise * quantity;
-
-        validatedItems.push({
-
-          id,
-
-          name:
-            String(product.name || id),
-
-          quantity,
-
-          price:
-            pricePaise / 100
-
-        });
-
-      }
+      const amountPaise =
+        Math.round(amount * 100);
 
       if (
-        !Number.isSafeInteger(totalPaise) ||
-        totalPaise < 100 ||
-        totalPaise > 100000000
+        Math.abs(
+          amount * 100 - amountPaise
+        ) > 0.000001
       ) {
 
         return res.status(400).json({
@@ -540,59 +294,50 @@ app.post(
           success: false,
 
           message:
-            "Invalid payment amount"
+            "Maximum two decimal places allowed"
 
         });
 
       }
+
+      /* Generate unique receipt */
 
       const receipt =
         "CZ_" +
         crypto.randomBytes(10)
           .toString("hex");
 
+      /* Create actual Razorpay order */
+
       const order =
         await razorpay.orders.create({
 
-          amount:
-            totalPaise,
+          amount: amountPaise,
 
-          currency:
-            "INR",
+          currency: "INR",
 
           receipt,
 
-          partial_payment:
-            false,
+          partial_payment: false,
 
           notes: {
 
-            application:
-              "CEZOO",
+            application: "CEZOO",
 
-            receipt,
+            payment_type:
+              "Dynamic Amount",
 
-            product_count:
-              String(
-                validatedItems.length
-              )
+            receipt
 
           }
 
         });
 
       console.log(
-        "CEZOO ORDER CREATED",
+        "RAZORPAY ORDER CREATED",
         {
-
-          order_id:
-            order.id,
-
-          amount:
-            totalPaise / 100,
-
-          receipt
-
+          order_id: order.id,
+          amount: amountPaise / 100
         }
       );
 
@@ -600,35 +345,27 @@ app.post(
 
         success: true,
 
-        key:
-          KEY_ID,
+        key: KEY_ID,
 
-        order_id:
-          order.id,
+        order_id: order.id,
+
+        amount: order.amount,
+
+        amount_rupees:
+          amountPaise / 100,
+
+        currency: "INR",
 
         receipt,
 
-        amount:
-          order.amount,
-
-        currency:
-          "INR",
-
-        products:
-          validatedItems,
-
-        total:
-          totalPaise / 100,
-
-        name:
-          "CEZOO",
+        name: "CEZOO",
 
         description:
           "CEZOO Payment"
 
       });
 
-    } catch(error) {
+    } catch (error) {
 
       console.error(
         "Create order error:",
@@ -647,17 +384,15 @@ app.post(
     }
 
   }
-
 );
 
 /* =====================================
-   8. VERIFY PAYMENT
+   VERIFY PAYMENT
 
    POST /api/razorpay/verify
 ===================================== */
 
 app.post(
-
   "/api/razorpay/verify",
 
   async (req, res) => {
@@ -665,13 +400,9 @@ app.post(
     try {
 
       const {
-
         razorpay_order_id,
-
         razorpay_payment_id,
-
         razorpay_signature
-
       } = req.body;
 
       if (
@@ -692,12 +423,6 @@ app.post(
       }
 
       if (
-        !/^order_[A-Za-z0-9]+$/.test(
-          razorpay_order_id
-        ) ||
-        !/^pay_[A-Za-z0-9]+$/.test(
-          razorpay_payment_id
-        ) ||
         !/^[a-f0-9]{64}$/i.test(
           razorpay_signature
         )
@@ -708,13 +433,13 @@ app.post(
           success: false,
 
           message:
-            "Invalid payment details"
+            "Invalid signature"
 
         });
 
       }
 
-      /* VERIFY SIGNATURE */
+      /* Verify Razorpay signature */
 
       const expectedSignature =
         crypto
@@ -729,7 +454,7 @@ app.post(
           )
           .digest("hex");
 
-      const signatureValid =
+      const valid =
         crypto.timingSafeEqual(
 
           Buffer.from(
@@ -744,38 +469,38 @@ app.post(
 
         );
 
-      if (!signatureValid) {
+      if (!valid) {
 
         return res.status(400).json({
 
           success: false,
 
           message:
-            "Payment signature verification failed"
+            "Payment signature mismatch"
 
         });
 
       }
 
-      /* FETCH ACTUAL PAYMENT */
+      /* Fetch actual payment */
 
       const payment =
         await razorpay.payments.fetch(
           razorpay_payment_id
         );
 
-      /* FETCH ACTUAL ORDER */
+      /* Fetch actual order */
 
       const order =
         await razorpay.orders.fetch(
           razorpay_order_id
         );
 
-      /* VALIDATE ORDER */
+      /* Validate order ID */
 
       if (
         payment.order_id !==
-        razorpay_order_id
+        order.id
       ) {
 
         return res.status(400).json({
@@ -789,7 +514,7 @@ app.post(
 
       }
 
-      /* VALIDATE AMOUNT */
+      /* Validate amount */
 
       if (
         payment.amount !==
@@ -807,7 +532,7 @@ app.post(
 
       }
 
-      /* VALIDATE CURRENCY */
+      /* Validate currency */
 
       if (
         payment.currency !== "INR" ||
@@ -819,13 +544,13 @@ app.post(
           success: false,
 
           message:
-            "Invalid payment currency"
+            "Invalid currency"
 
         });
 
       }
 
-      /* CHECK PAYMENT CAPTURE */
+      /* Check captured status */
 
       if (
         payment.status !== "captured"
@@ -839,30 +564,19 @@ app.post(
             payment.status,
 
           message:
-            "Payment not captured yet"
+            "Payment confirmation pending"
 
         });
 
       }
 
-      /* SUCCESS */
-
       console.log(
         "CEZOO PAYMENT SUCCESSFUL",
         {
-
-          order_id:
-            razorpay_order_id,
-
-          payment_id:
-            razorpay_payment_id,
-
-          amount:
-            payment.amount / 100,
-
-          method:
-            payment.method
-
+          order_id: order.id,
+          payment_id: payment.id,
+          amount: payment.amount / 100,
+          method: payment.method
         }
       );
 
@@ -877,10 +591,10 @@ app.post(
           "captured",
 
         order_id:
-          razorpay_order_id,
+          order.id,
 
         payment_id:
-          razorpay_payment_id,
+          payment.id,
 
         amount:
           payment.amount / 100,
@@ -893,10 +607,10 @@ app.post(
 
       });
 
-    } catch(error) {
+    } catch (error) {
 
       console.error(
-        "Payment verification error:",
+        "Verify error:",
         error.message
       );
 
@@ -912,11 +626,108 @@ app.post(
     }
 
   }
-
 );
 
 /* =====================================
-   9. ERROR HANDLER
+   PAYMENT STATUS
+
+   GET /api/razorpay/status/:orderId
+===================================== */
+
+app.get(
+  "/api/razorpay/status/:orderId",
+
+  async (req, res) => {
+
+    try {
+
+      const orderId =
+        req.params.orderId;
+
+      if (
+        !/^order_[A-Za-z0-9]+$/.test(
+          orderId
+        )
+      ) {
+
+        return res.status(400).json({
+
+          success: false,
+
+          message:
+            "Invalid order ID"
+
+        });
+
+      }
+
+      const order =
+        await razorpay.orders.fetch(
+          orderId
+        );
+
+      const payments =
+        await razorpay.orders.fetchPayments(
+          orderId
+        );
+
+      const captured =
+        payments.items.find(
+          payment =>
+            payment.status === "captured" &&
+            payment.order_id === orderId &&
+            payment.amount === order.amount &&
+            payment.currency === order.currency
+        );
+
+      return res.json({
+
+        success: true,
+
+        order_id: order.id,
+
+        status:
+          captured
+            ? "captured"
+            : order.status,
+
+        amount:
+          order.amount / 100,
+
+        currency:
+          order.currency,
+
+        payment_id:
+          captured?.id || null,
+
+        payment_method:
+          captured?.method || null
+
+      });
+
+    } catch (error) {
+
+      console.error(
+        "Status error:",
+        error.message
+      );
+
+      return res.status(500).json({
+
+        success: false,
+
+        message:
+          "Unable to check payment status"
+
+      });
+
+    }
+
+  }
+);
+
+/* =====================================
+   ERROR HANDLER
 ===================================== */
 
 app.use(
@@ -927,28 +738,18 @@ app.use(
       err.message
     );
 
-    if (
-      err.message ===
-      "CORS not allowed"
-    ) {
-
-      return res.status(403).json({
-
-        success: false,
-
-        message:
-          "Website origin not allowed"
-
-      });
-
-    }
-
-    return res.status(500).json({
+    return res.status(
+      err.message === "CORS not allowed"
+        ? 403
+        : 500
+    ).json({
 
       success: false,
 
       message:
-        "Internal server error"
+        err.message === "CORS not allowed"
+          ? "Website origin not allowed"
+          : "Internal server error"
 
     });
 
@@ -956,23 +757,16 @@ app.use(
 );
 
 /* =====================================
-   10. START SERVER
+   START SERVER
 ===================================== */
 
 app.listen(
-
   PORT,
-
   "0.0.0.0",
-
   () => {
 
     console.log(
-      "================================"
-    );
-
-    console.log(
-      "CEZOO Backend Running"
+      "CEZOO Payment Backend Running"
     );
 
     console.log(
@@ -984,17 +778,12 @@ app.listen(
     );
 
     console.log(
-      "CORS: trivoxaiimpact.com allowed"
+      "Dynamic Payment Enabled"
     );
 
     console.log(
-      "₹1 Payment Ready"
-    );
-
-    console.log(
-      "================================"
+      "CORS Allowed: trivoxaiimpact.com"
     );
 
   }
-
 );
