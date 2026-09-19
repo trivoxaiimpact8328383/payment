@@ -1,5 +1,4 @@
 
-
 require("dotenv").config();
 
 const express = require("express");
@@ -11,9 +10,9 @@ const app = express();
 
 const PORT = process.env.PORT || 10000;
 
-/* ======================================
-   RAZORPAY LIVE CONFIGURATION
-====================================== */
+/* =====================================
+   1. RAZORPAY LIVE KEYS
+===================================== */
 
 const KEY_ID =
   process.env.RAZORPAY_KEY_ID;
@@ -26,7 +25,7 @@ const WEBHOOK_SECRET =
 
 if (!KEY_ID || !KEY_SECRET) {
   throw new Error(
-    "Razorpay keys missing in Render"
+    "Razorpay keys missing in Render Environment"
   );
 }
 
@@ -41,49 +40,78 @@ const razorpay = new Razorpay({
   key_secret: KEY_SECRET
 });
 
-/* ======================================
-   MIDDLEWARE
-====================================== */
+/* =====================================
+   2. CORS CONFIGURATION
+===================================== */
 
-const allowedOrigins = (
-  process.env.FRONTEND_URL || ""
-)
-  .split(",")
-  .map(x => x.trim().replace(/\/$/, ""))
-  .filter(Boolean);
+const allowedOrigins = [
+  "https://trivoxaiimpact.com",
+  "https://www.trivoxaiimpact.com"
+];
 
-app.use(
-  cors({
-    origin(origin, callback) {
+if (process.env.FRONTEND_URL) {
 
-      if (
-        !origin ||
-        allowedOrigins.includes(origin)
-      ) {
-        return callback(null, true);
-      }
+  const extraOrigins =
+    process.env.FRONTEND_URL
+      .split(",")
+      .map(url =>
+        url.trim().replace(/\/$/, "")
+      )
+      .filter(Boolean);
 
-      return callback(
-        new Error("Origin not allowed")
-      );
-    },
+  allowedOrigins.push(...extraOrigins);
 
-    methods: ["GET", "POST"],
+}
 
-    allowedHeaders: [
-      "Content-Type",
-      "Authorization"
-    ]
-  })
-);
+const corsOptions = {
 
-/* ======================================
-   RAZORPAY WEBHOOK
+  origin: function(origin, callback) {
 
-   RAW BODY REQUIRED FOR SIGNATURE
-====================================== */
+    if (
+      !origin ||
+      allowedOrigins.includes(origin)
+    ) {
+
+      return callback(null, true);
+
+    }
+
+    console.log(
+      "CORS blocked:",
+      origin
+    );
+
+    return callback(
+      new Error("CORS not allowed")
+    );
+
+  },
+
+  methods: [
+    "GET",
+    "POST",
+    "OPTIONS"
+  ],
+
+  allowedHeaders: [
+    "Content-Type",
+    "Authorization"
+  ],
+
+  optionsSuccessStatus: 204
+
+};
+
+app.use(cors(corsOptions));
+
+/* =====================================
+   3. RAZORPAY WEBHOOK
+
+   Must come before express.json()
+===================================== */
 
 app.post(
+
   "/api/razorpay/webhook",
 
   express.raw({
@@ -95,7 +123,13 @@ app.post(
     try {
 
       if (!WEBHOOK_SECRET) {
+
+        console.error(
+          "Webhook secret missing"
+        );
+
         return res.sendStatus(503);
+
       }
 
       const signature =
@@ -105,25 +139,43 @@ app.post(
         typeof signature !== "string" ||
         !/^[a-f0-9]{64}$/i.test(signature)
       ) {
+
         return res.sendStatus(400);
+
       }
 
-      const expected = crypto
-        .createHmac(
-          "sha256",
-          WEBHOOK_SECRET
-        )
-        .update(req.body)
-        .digest("hex");
+      const expectedSignature =
+        crypto
+          .createHmac(
+            "sha256",
+            WEBHOOK_SECRET
+          )
+          .update(req.body)
+          .digest("hex");
 
       const valid =
         crypto.timingSafeEqual(
-          Buffer.from(signature, "hex"),
-          Buffer.from(expected, "hex")
+
+          Buffer.from(
+            signature,
+            "hex"
+          ),
+
+          Buffer.from(
+            expectedSignature,
+            "hex"
+          )
+
         );
 
       if (!valid) {
+
+        console.error(
+          "Invalid webhook signature"
+        );
+
         return res.sendStatus(400);
+
       }
 
       const event = JSON.parse(
@@ -132,6 +184,9 @@ app.post(
 
       const payment =
         event.payload?.payment?.entity;
+
+      const refund =
+        event.payload?.refund?.entity;
 
       switch (event.event) {
 
@@ -177,7 +232,14 @@ app.post(
         case "refund.created":
 
           console.log(
-            "CEZOO REFUND EVENT"
+            "CEZOO REFUND CREATED",
+            {
+              refund_id:
+                refund?.id,
+
+              payment_id:
+                refund?.payment_id
+            }
           );
 
           break;
@@ -195,7 +257,7 @@ app.post(
         success: true
       });
 
-    } catch (error) {
+    } catch(error) {
 
       console.error(
         "Webhook error:",
@@ -207,41 +269,89 @@ app.post(
     }
 
   }
+
 );
 
-app.use(express.json({
-  limit: "100kb"
-}));
+/* =====================================
+   4. JSON MIDDLEWARE
+===================================== */
 
-/* ======================================
-   CEZOO PRODUCT CATALOG
+app.use(
+  express.json({
+    limit: "100kb"
+  })
+);
 
-   Store trusted product prices on
-   the server, not in customer HTML.
+/* =====================================
+   5. PRODUCT CATALOG
 
-   Configure PRODUCT_CATALOG_JSON
-   in Render.
-====================================== */
+   ₹1 product included automatically.
 
-let PRODUCT_CATALOG = {};
+   Add actual products using
+   PRODUCT_CATALOG_JSON in Render.
+===================================== */
 
-try {
+let PRODUCT_CATALOG = {
 
-  PRODUCT_CATALOG = JSON.parse(
-    process.env.PRODUCT_CATALOG_JSON || "{}"
-  );
+  payment_1: {
 
-} catch (error) {
+    name: "CEZOO ₹1 Payment",
 
-  throw new Error(
-    "Invalid PRODUCT_CATALOG_JSON"
-  );
+    price_paise: 100
+
+  }
+
+};
+
+if (process.env.PRODUCT_CATALOG_JSON) {
+
+  try {
+
+    const additionalProducts =
+      JSON.parse(
+        process.env.PRODUCT_CATALOG_JSON
+      );
+
+    if (
+      !additionalProducts ||
+      typeof additionalProducts !== "object" ||
+      Array.isArray(additionalProducts)
+    ) {
+
+      throw new Error(
+        "Product catalog must be an object"
+      );
+
+    }
+
+    PRODUCT_CATALOG = {
+
+      ...additionalProducts,
+
+      payment_1: {
+
+        name: "CEZOO ₹1 Payment",
+
+        price_paise: 100
+
+      }
+
+    };
+
+  } catch(error) {
+
+    throw new Error(
+      "Invalid PRODUCT_CATALOG_JSON: " +
+      error.message
+    );
+
+  }
 
 }
 
-/* ======================================
-   HEALTH CHECK
-====================================== */
+/* =====================================
+   6. HEALTH CHECK
+===================================== */
 
 app.get("/", (req, res) => {
 
@@ -249,10 +359,10 @@ app.get("/", (req, res) => {
 
     success: true,
 
-    app: "CEZOO",
+    application: "CEZOO",
 
     service:
-      "Razorpay Payment Gateway",
+      "Razorpay Live Payment Backend",
 
     mode: "LIVE",
 
@@ -262,13 +372,31 @@ app.get("/", (req, res) => {
 
 });
 
-/* ======================================
-   CREATE PRODUCT PAYMENT ORDER
+app.get(
+  "/api/health",
+  (req, res) => {
+
+    res.json({
+
+      success: true,
+
+      status: "running",
+
+      mode: "LIVE"
+
+    });
+
+  }
+);
+
+/* =====================================
+   7. CREATE RAZORPAY ORDER
 
    POST /api/razorpay/create-order
-====================================== */
+===================================== */
 
 app.post(
+
   "/api/razorpay/create-order",
 
   async (req, res) => {
@@ -276,9 +404,13 @@ app.post(
     try {
 
       const {
+
         items,
+
         customer_name,
+
         customer_phone
+
       } = req.body;
 
       if (
@@ -304,15 +436,35 @@ app.post(
 
       for (const item of items) {
 
-        const id = String(
-          item.id || ""
-        );
+        if (
+          !item ||
+          typeof item !== "object"
+        ) {
+
+          return res.status(400).json({
+
+            success: false,
+
+            message:
+              "Invalid product item"
+
+          });
+
+        }
+
+        const id =
+          String(item.id || "");
 
         const quantity =
           item.quantity;
 
         const product =
-          PRODUCT_CATALOG[id];
+          Object.prototype.hasOwnProperty.call(
+            PRODUCT_CATALOG,
+            id
+          )
+            ? PRODUCT_CATALOG[id]
+            : null;
 
         if (!product) {
 
@@ -321,7 +473,7 @@ app.post(
             success: false,
 
             message:
-              "Invalid product: " + id
+              "Product not found: " + id
 
           });
 
@@ -338,7 +490,7 @@ app.post(
             success: false,
 
             message:
-              "Invalid product quantity"
+              "Invalid quantity"
 
           });
 
@@ -388,7 +540,7 @@ app.post(
           success: false,
 
           message:
-            "Invalid order total"
+            "Invalid payment amount"
 
         });
 
@@ -402,22 +554,28 @@ app.post(
       const order =
         await razorpay.orders.create({
 
-          amount: totalPaise,
+          amount:
+            totalPaise,
 
-          currency: "INR",
+          currency:
+            "INR",
 
           receipt,
 
-          partial_payment: false,
+          partial_payment:
+            false,
 
           notes: {
 
-            app: "CEZOO",
+            application:
+              "CEZOO",
 
             receipt,
 
             product_count:
-              String(validatedItems.length)
+              String(
+                validatedItems.length
+              )
 
           }
 
@@ -426,8 +584,15 @@ app.post(
       console.log(
         "CEZOO ORDER CREATED",
         {
-          order_id: order.id,
-          amount: totalPaise / 100
+
+          order_id:
+            order.id,
+
+          amount:
+            totalPaise / 100,
+
+          receipt
+
         }
       );
 
@@ -435,7 +600,8 @@ app.post(
 
         success: true,
 
-        key: KEY_ID,
+        key:
+          KEY_ID,
 
         order_id:
           order.id,
@@ -458,11 +624,11 @@ app.post(
           "CEZOO",
 
         description:
-          "CEZOO Grocery Purchase"
+          "CEZOO Payment"
 
       });
 
-    } catch (error) {
+    } catch(error) {
 
       console.error(
         "Create order error:",
@@ -481,15 +647,17 @@ app.post(
     }
 
   }
+
 );
 
-/* ======================================
-   VERIFY PAYMENT
+/* =====================================
+   8. VERIFY PAYMENT
 
    POST /api/razorpay/verify
-====================================== */
+===================================== */
 
 app.post(
+
   "/api/razorpay/verify",
 
   async (req, res) => {
@@ -497,9 +665,13 @@ app.post(
     try {
 
       const {
+
         razorpay_order_id,
+
         razorpay_payment_id,
+
         razorpay_signature
+
       } = req.body;
 
       if (
@@ -513,13 +685,19 @@ app.post(
           success: false,
 
           message:
-            "Payment details missing"
+            "Missing payment details"
 
         });
 
       }
 
       if (
+        !/^order_[A-Za-z0-9]+$/.test(
+          razorpay_order_id
+        ) ||
+        !/^pay_[A-Za-z0-9]+$/.test(
+          razorpay_payment_id
+        ) ||
         !/^[a-f0-9]{64}$/i.test(
           razorpay_signature
         )
@@ -530,13 +708,13 @@ app.post(
           success: false,
 
           message:
-            "Invalid payment signature"
+            "Invalid payment details"
 
         });
 
       }
 
-      /* Verify Razorpay signature */
+      /* VERIFY SIGNATURE */
 
       const expectedSignature =
         crypto
@@ -573,25 +751,27 @@ app.post(
           success: false,
 
           message:
-            "Payment signature mismatch"
+            "Payment signature verification failed"
 
         });
 
       }
 
-      /* Fetch real payment from Razorpay */
+      /* FETCH ACTUAL PAYMENT */
 
       const payment =
         await razorpay.payments.fetch(
           razorpay_payment_id
         );
 
-      /* Fetch real Razorpay order */
+      /* FETCH ACTUAL ORDER */
 
       const order =
         await razorpay.orders.fetch(
           razorpay_order_id
         );
+
+      /* VALIDATE ORDER */
 
       if (
         payment.order_id !==
@@ -609,6 +789,8 @@ app.post(
 
       }
 
+      /* VALIDATE AMOUNT */
+
       if (
         payment.amount !==
         order.amount
@@ -625,6 +807,8 @@ app.post(
 
       }
 
+      /* VALIDATE CURRENCY */
+
       if (
         payment.currency !== "INR" ||
         order.currency !== "INR"
@@ -635,13 +819,13 @@ app.post(
           success: false,
 
           message:
-            "Invalid currency"
+            "Invalid payment currency"
 
         });
 
       }
 
-      /* Confirm money was captured */
+      /* CHECK PAYMENT CAPTURE */
 
       if (
         payment.status !== "captured"
@@ -661,9 +845,12 @@ app.post(
 
       }
 
+      /* SUCCESS */
+
       console.log(
-        "CEZOO PAYMENT VERIFIED",
+        "CEZOO PAYMENT SUCCESSFUL",
         {
+
           order_id:
             razorpay_order_id,
 
@@ -675,6 +862,7 @@ app.post(
 
           method:
             payment.method
+
         }
       );
 
@@ -683,7 +871,7 @@ app.post(
         success: true,
 
         message:
-          "CEZOO payment successful",
+          "Payment Successful!",
 
         status:
           "captured",
@@ -705,7 +893,7 @@ app.post(
 
       });
 
-    } catch (error) {
+    } catch(error) {
 
       console.error(
         "Payment verification error:",
@@ -724,16 +912,64 @@ app.post(
     }
 
   }
+
 );
 
-/* ======================================
-   SERVER START
-====================================== */
+/* =====================================
+   9. ERROR HANDLER
+===================================== */
+
+app.use(
+  (err, req, res, next) => {
+
+    console.error(
+      "Server error:",
+      err.message
+    );
+
+    if (
+      err.message ===
+      "CORS not allowed"
+    ) {
+
+      return res.status(403).json({
+
+        success: false,
+
+        message:
+          "Website origin not allowed"
+
+      });
+
+    }
+
+    return res.status(500).json({
+
+      success: false,
+
+      message:
+        "Internal server error"
+
+    });
+
+  }
+);
+
+/* =====================================
+   10. START SERVER
+===================================== */
 
 app.listen(
+
   PORT,
+
   "0.0.0.0",
+
   () => {
+
+    console.log(
+      "================================"
+    );
 
     console.log(
       "CEZOO Backend Running"
@@ -747,5 +983,18 @@ app.listen(
       "Razorpay LIVE Mode"
     );
 
+    console.log(
+      "CORS: trivoxaiimpact.com allowed"
+    );
+
+    console.log(
+      "₹1 Payment Ready"
+    );
+
+    console.log(
+      "================================"
+    );
+
   }
+
 );
