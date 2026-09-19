@@ -11,7 +11,7 @@ const app = express();
 const PORT = process.env.PORT || 10000;
 
 /* =====================================
-   RAZORPAY LIVE CONFIGURATION
+   1. RAZORPAY LIVE KEYS
 ===================================== */
 
 const KEY_ID =
@@ -31,7 +31,7 @@ if (!KEY_ID || !KEY_SECRET) {
 
 if (!KEY_ID.startsWith("rzp_live_")) {
   throw new Error(
-    "Please use Razorpay LIVE keys"
+    "Razorpay LIVE key required"
   );
 }
 
@@ -41,7 +41,7 @@ const razorpay = new Razorpay({
 });
 
 /* =====================================
-   CORS FIX
+   2. CORS FIX
 ===================================== */
 
 const allowedOrigins = [
@@ -95,7 +95,7 @@ app.use(cors({
 }));
 
 /* =====================================
-   WEBHOOK
+   3. WEBHOOK
    BEFORE express.json()
 ===================================== */
 
@@ -134,17 +134,8 @@ app.post(
 
       const valid =
         crypto.timingSafeEqual(
-
-          Buffer.from(
-            signature,
-            "hex"
-          ),
-
-          Buffer.from(
-            expected,
-            "hex"
-          )
-
+          Buffer.from(signature, "hex"),
+          Buffer.from(expected, "hex")
         );
 
       if (!valid) {
@@ -188,7 +179,7 @@ app.post(
 
       }
 
-      return res.json({
+      return res.status(200).json({
         success: true
       });
 
@@ -207,7 +198,7 @@ app.post(
 );
 
 /* =====================================
-   JSON MIDDLEWARE
+   4. JSON MIDDLEWARE
 ===================================== */
 
 app.use(
@@ -217,7 +208,7 @@ app.use(
 );
 
 /* =====================================
-   HEALTH CHECK
+   5. HEALTH CHECK
 ===================================== */
 
 app.get("/", (req, res) => {
@@ -228,19 +219,21 @@ app.get("/", (req, res) => {
 
     application: "CEZOO",
 
+    service:
+      "Razorpay Payment Backend",
+
     mode: "LIVE",
 
     status: "running",
 
-    payment:
-      "Dynamic Amount Enabled"
+    dynamic_payment: true
 
   });
 
 });
 
 /* =====================================
-   CREATE DYNAMIC PAYMENT ORDER
+   6. CREATE DYNAMIC PAYMENT
 
    POST /api/razorpay/create-order
 ===================================== */
@@ -256,15 +249,30 @@ app.post(
         amount,
         customer_name,
         customer_phone
-      } = req.body;
+      } = req.body || {};
 
-      /* Validate amount in rupees */
+      console.log(
+        "Payment request received",
+        {
+          amount,
+          type: typeof amount
+        }
+      );
+
+      /* ACCEPT NUMBER OR NUMERIC STRING */
 
       if (
-        typeof amount !== "number" ||
-        !Number.isFinite(amount) ||
-        amount < 1 ||
-        amount > 1000000
+        amount === undefined ||
+        amount === null ||
+        typeof amount === "boolean" ||
+        (
+          typeof amount !== "number" &&
+          typeof amount !== "string"
+        ) ||
+        (
+          typeof amount === "string" &&
+          amount.trim() === ""
+        )
       ) {
 
         return res.status(400).json({
@@ -272,20 +280,47 @@ app.post(
           success: false,
 
           message:
-            "Enter a valid amount between ₹1 and ₹10,00,000"
+            "Please enter a valid amount"
 
         });
 
       }
 
-      /* Convert rupees to paise */
+      const paymentAmount =
+        Number(amount);
+
+      /* VALIDATE AMOUNT */
+
+      if (
+        !Number.isFinite(paymentAmount) ||
+        paymentAmount < 1 ||
+        paymentAmount > 1000000
+      ) {
+
+        return res.status(400).json({
+
+          success: false,
+
+          message:
+            "Enter an amount between ₹1 and ₹10,00,000"
+
+        });
+
+      }
+
+      /* CONVERT RUPEES TO PAISE */
 
       const amountPaise =
-        Math.round(amount * 100);
+        Math.round(
+          paymentAmount * 100
+        );
+
+      /* MAXIMUM TWO DECIMAL PLACES */
 
       if (
         Math.abs(
-          amount * 100 - amountPaise
+          paymentAmount * 100 -
+          amountPaise
         ) > 0.000001
       ) {
 
@@ -294,20 +329,20 @@ app.post(
           success: false,
 
           message:
-            "Maximum two decimal places allowed"
+            "Only two decimal places allowed"
 
         });
 
       }
 
-      /* Generate unique receipt */
+      /* UNIQUE RECEIPT */
 
       const receipt =
         "CZ_" +
         crypto.randomBytes(10)
           .toString("hex");
 
-      /* Create actual Razorpay order */
+      /* CREATE RAZORPAY ORDER */
 
       const order =
         await razorpay.orders.create({
@@ -368,16 +403,25 @@ app.post(
     } catch (error) {
 
       console.error(
-        "Create order error:",
+        "CREATE ORDER ERROR:",
         error.message
       );
+
+      if (error.error) {
+
+        console.error(
+          "Razorpay details:",
+          error.error.description
+        );
+
+      }
 
       return res.status(500).json({
 
         success: false,
 
         message:
-          "Unable to create payment order"
+          "Unable to create Razorpay order"
 
       });
 
@@ -387,7 +431,7 @@ app.post(
 );
 
 /* =====================================
-   VERIFY PAYMENT
+   7. VERIFY PAYMENT
 
    POST /api/razorpay/verify
 ===================================== */
@@ -400,10 +444,16 @@ app.post(
     try {
 
       const {
+
         razorpay_order_id,
+
         razorpay_payment_id,
+
         razorpay_signature
-      } = req.body;
+
+      } = req.body || {};
+
+      /* VALIDATE PAYMENT DETAILS */
 
       if (
         typeof razorpay_order_id !== "string" ||
@@ -423,6 +473,12 @@ app.post(
       }
 
       if (
+        !/^order_[A-Za-z0-9]+$/.test(
+          razorpay_order_id
+        ) ||
+        !/^pay_[A-Za-z0-9]+$/.test(
+          razorpay_payment_id
+        ) ||
         !/^[a-f0-9]{64}$/i.test(
           razorpay_signature
         )
@@ -433,13 +489,13 @@ app.post(
           success: false,
 
           message:
-            "Invalid signature"
+            "Invalid payment details"
 
         });
 
       }
 
-      /* Verify Razorpay signature */
+      /* GENERATE EXPECTED SIGNATURE */
 
       const expectedSignature =
         crypto
@@ -453,6 +509,8 @@ app.post(
             razorpay_payment_id
           )
           .digest("hex");
+
+      /* COMPARE SIGNATURES */
 
       const valid =
         crypto.timingSafeEqual(
@@ -482,21 +540,21 @@ app.post(
 
       }
 
-      /* Fetch actual payment */
+      /* FETCH REAL PAYMENT */
 
       const payment =
         await razorpay.payments.fetch(
           razorpay_payment_id
         );
 
-      /* Fetch actual order */
+      /* FETCH REAL ORDER */
 
       const order =
         await razorpay.orders.fetch(
           razorpay_order_id
         );
 
-      /* Validate order ID */
+      /* CHECK ORDER */
 
       if (
         payment.order_id !==
@@ -514,7 +572,7 @@ app.post(
 
       }
 
-      /* Validate amount */
+      /* CHECK AMOUNT */
 
       if (
         payment.amount !==
@@ -532,7 +590,7 @@ app.post(
 
       }
 
-      /* Validate currency */
+      /* CHECK CURRENCY */
 
       if (
         payment.currency !== "INR" ||
@@ -550,7 +608,7 @@ app.post(
 
       }
 
-      /* Check captured status */
+      /* CHECK CAPTURE STATUS */
 
       if (
         payment.status !== "captured"
@@ -570,13 +628,24 @@ app.post(
 
       }
 
+      /* PAYMENT SUCCESS */
+
       console.log(
         "CEZOO PAYMENT SUCCESSFUL",
         {
-          order_id: order.id,
-          payment_id: payment.id,
-          amount: payment.amount / 100,
-          method: payment.method
+
+          order_id:
+            order.id,
+
+          payment_id:
+            payment.id,
+
+          amount:
+            payment.amount / 100,
+
+          method:
+            payment.method
+
         }
       );
 
@@ -610,7 +679,7 @@ app.post(
     } catch (error) {
 
       console.error(
-        "Verify error:",
+        "VERIFY PAYMENT ERROR:",
         error.message
       );
 
@@ -629,7 +698,7 @@ app.post(
 );
 
 /* =====================================
-   PAYMENT STATUS
+   8. PAYMENT STATUS
 
    GET /api/razorpay/status/:orderId
 ===================================== */
@@ -684,7 +753,8 @@ app.get(
 
         success: true,
 
-        order_id: order.id,
+        order_id:
+          order.id,
 
         status:
           captured
@@ -708,7 +778,7 @@ app.get(
     } catch (error) {
 
       console.error(
-        "Status error:",
+        "PAYMENT STATUS ERROR:",
         error.message
       );
 
@@ -727,14 +797,14 @@ app.get(
 );
 
 /* =====================================
-   ERROR HANDLER
+   9. ERROR HANDLER
 ===================================== */
 
 app.use(
   (err, req, res, next) => {
 
     console.error(
-      "Server error:",
+      "SERVER ERROR:",
       err.message
     );
 
@@ -757,7 +827,7 @@ app.use(
 );
 
 /* =====================================
-   START SERVER
+   10. START SERVER
 ===================================== */
 
 app.listen(
@@ -766,7 +836,11 @@ app.listen(
   () => {
 
     console.log(
-      "CEZOO Payment Backend Running"
+      "================================"
+    );
+
+    console.log(
+      "CEZOO PAYMENT BACKEND RUNNING"
     );
 
     console.log(
@@ -774,15 +848,19 @@ app.listen(
     );
 
     console.log(
-      "Razorpay LIVE Mode"
+      "RAZORPAY LIVE MODE"
     );
 
     console.log(
-      "Dynamic Payment Enabled"
+      "DYNAMIC PAYMENT ENABLED"
     );
 
     console.log(
-      "CORS Allowed: trivoxaiimpact.com"
+      "CORS: trivoxaiimpact.com allowed"
+    );
+
+    console.log(
+      "================================"
     );
 
   }
