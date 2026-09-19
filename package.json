@@ -1,9 +1,9 @@
 
 {
-  "name": "cezoo-razorpay-backend",
+  "name": "cezoo-dynamic-payment",
   "version": "1.0.0",
   "private": true,
-  "description": "CEZOO Live Razorpay Payment Integration",
+  "description": "CEZOO Live Dynamic Razorpay Payment",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
