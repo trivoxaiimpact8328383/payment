@@ -34,22 +34,152 @@ const razorpay = new Razorpay({
   key_secret: KEY_SECRET
 });
 
+/* =========================================
+   2. SUPABASE CONFIGURATION
+
+   Supports:
+   - Legacy service_role JWT: eyJ...
+   - New secret key: sb_secret_...
+
+   Never put these keys in HTML.
+========================================= */
+
+function getSupabaseKeyInfo(key) {
+  if (!key) {
+    return {
+      type: "missing",
+      role: "missing"
+    };
+  }
+
+  if (key.startsWith("sb_secret_")) {
+    return {
+      type: "new_secret_key",
+      role: "server_secret"
+    };
+  }
+
+  if (key.startsWith("sb_publishable_")) {
+    return {
+      type: "publishable_key",
+      role: "not_service_role"
+    };
+  }
+
+  if (key.startsWith("eyJ")) {
+    try {
+      const parts = key.split(".");
+
+      if (parts.length !== 3) {
+        return {
+          type: "jwt",
+          role: "invalid_jwt_format"
+        };
+      }
+
+      const payload = JSON.parse(
+        Buffer.from(
+          parts[1],
+          "base64url"
+        ).toString("utf8")
+      );
+
+      return {
+        type: "legacy_jwt",
+        role: payload.role || "unknown"
+      };
+
+    } catch (error) {
+      return {
+        type: "jwt",
+        role: "unreadable"
+      };
+    }
+  }
+
+  return {
+    type: "unknown",
+    role: "unknown"
+  };
+}
+
+const supabaseKeyInfo =
+  getSupabaseKeyInfo(
+    SUPABASE_SERVICE_ROLE_KEY
+  );
+
+console.log("SUPABASE CONFIG CHECK", {
+  url_configured: Boolean(SUPABASE_URL),
+  key_configured:
+    Boolean(SUPABASE_SERVICE_ROLE_KEY),
+  key_type: supabaseKeyInfo.type,
+  key_role: supabaseKeyInfo.role
+});
+
+/*
+  Prevent accidental browser-level keys
+  from being used as backend admin keys.
+*/
+
+const invalidSupabaseKey =
+  supabaseKeyInfo.type === "publishable_key" ||
+  supabaseKeyInfo.role === "anon" ||
+  supabaseKeyInfo.role === "authenticated" ||
+  (
+    supabaseKeyInfo.type === "legacy_jwt" &&
+    supabaseKeyInfo.role !== "service_role"
+  );
+
+if (invalidSupabaseKey) {
+  console.error(
+    "SUPABASE ERROR: Backend requires a genuine " +
+    "service_role JWT or sb_secret_ key."
+  );
+}
+
+/*
+  For sb_secret_ keys, let Supabase SDK
+  manage the headers.
+
+  For legacy service_role JWTs, set the
+  matching Authorization header explicitly.
+
+  Never force sb_secret_ into a Bearer header.
+*/
+
+const supabaseOptions = {
+  auth: {
+    persistSession: false,
+    autoRefreshToken: false,
+    detectSessionInUrl: false
+  }
+};
+
+if (
+  supabaseKeyInfo.type === "legacy_jwt" &&
+  supabaseKeyInfo.role === "service_role"
+) {
+  supabaseOptions.global = {
+    headers: {
+      Authorization:
+        `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`
+    }
+  };
+}
+
 const trivoxDb =
-  SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY
+  SUPABASE_URL &&
+  SUPABASE_SERVICE_ROLE_KEY &&
+  !invalidSupabaseKey
     ? createClient(
         SUPABASE_URL,
         SUPABASE_SERVICE_ROLE_KEY,
-        {
-          auth: {
-            persistSession: false,
-            autoRefreshToken: false
-          }
-        }
+        supabaseOptions
       )
     : null;
 
 /* =========================================
-   2. CORS
+   3. CORS
 ========================================= */
 
 const allowedOrigins = [
@@ -61,7 +191,9 @@ if (process.env.FRONTEND_URL) {
   allowedOrigins.push(
     ...process.env.FRONTEND_URL
       .split(",")
-      .map(url => url.trim().replace(/\/$/, ""))
+      .map(url =>
+        url.trim().replace(/\/$/, "")
+      )
       .filter(Boolean)
   );
 }
@@ -69,14 +201,23 @@ if (process.env.FRONTEND_URL) {
 app.use(
   cors({
     origin(origin, callback) {
-      if (!origin || allowedOrigins.includes(origin)) {
+      if (
+        !origin ||
+        allowedOrigins.includes(origin)
+      ) {
         return callback(null, true);
       }
 
-      return callback(new Error("CORS not allowed"));
+      return callback(
+        new Error("CORS not allowed")
+      );
     },
 
-    methods: ["GET", "POST", "OPTIONS"],
+    methods: [
+      "GET",
+      "POST",
+      "OPTIONS"
+    ],
 
     allowedHeaders: [
       "Content-Type",
@@ -88,7 +229,7 @@ app.use(
 );
 
 /* =========================================
-   3. HELPERS
+   4. HELPERS
 ========================================= */
 
 function validOrderId(value) {
@@ -112,7 +253,11 @@ function validSignature(value) {
   );
 }
 
-function verifyHmac(payload, signature, secret) {
+function verifyHmac(
+  payload,
+  signature,
+  secret
+) {
   if (!validSignature(signature)) {
     return false;
   }
@@ -135,15 +280,17 @@ function databaseReady(res) {
 
   res.status(503).json({
     success: false,
-    message: "Supabase environment variables missing"
+    message:
+      "Supabase backend configuration invalid"
   });
 
   return false;
 }
 
 /* =========================================
-   4. WEBHOOK
-   MUST BE BEFORE express.json()
+   5. WEBHOOK
+
+   Must be BEFORE express.json()
 ========================================= */
 
 app.post(
@@ -179,13 +326,29 @@ app.post(
       const payment =
         event.payload?.payment?.entity;
 
-      if (event.event === "payment.captured") {
-        console.log("PAYMENT CAPTURED", {
-          payment_id: payment?.id,
-          order_id: payment?.order_id,
-          amount: payment?.amount / 100,
-          method: payment?.method
-        });
+      if (
+        event.event ===
+        "payment.captured"
+      ) {
+        console.log(
+          "PAYMENT CAPTURED",
+          {
+            payment_id: payment?.id,
+            order_id: payment?.order_id,
+            amount:
+              payment?.amount / 100,
+            method: payment?.method
+          }
+        );
+
+        /*
+          Existing dynamic payments
+          remain unchanged.
+
+          Only Trivox course orders
+          found in the course table
+          are updated.
+        */
 
         if (
           trivoxDb &&
@@ -196,8 +359,12 @@ app.post(
             data: courseTx,
             error: lookupError
           } = await trivoxDb
-            .from("trivox_course_payments")
-            .select("razorpay_order_id")
+            .from(
+              "trivox_course_payments"
+            )
+            .select(
+              "razorpay_order_id"
+            )
             .eq(
               "razorpay_order_id",
               payment.order_id
@@ -222,11 +389,17 @@ app.post(
         }
       }
 
-      if (event.event === "payment.failed") {
-        console.log("PAYMENT FAILED", {
-          payment_id: payment?.id,
-          order_id: payment?.order_id
-        });
+      if (
+        event.event ===
+        "payment.failed"
+      ) {
+        console.log(
+          "PAYMENT FAILED",
+          {
+            payment_id: payment?.id,
+            order_id: payment?.order_id
+          }
+        );
       }
 
       return res.status(200).json({
@@ -245,7 +418,7 @@ app.post(
 );
 
 /* =========================================
-   5. JSON MIDDLEWARE
+   6. JSON MIDDLEWARE
 ========================================= */
 
 app.use(
@@ -255,24 +428,36 @@ app.use(
 );
 
 /* =========================================
-   6. HEALTH CHECK
+   7. HEALTH CHECK
 ========================================= */
 
 app.get("/", (req, res) => {
   return res.json({
     success: true,
-    application: "Trivox AI Impact",
-    service: "Razorpay Payment Backend",
+    application:
+      "Trivox AI Impact",
+    service:
+      "Razorpay Payment Backend",
     mode: "LIVE",
     status: "running",
+
     dynamic_payment: true,
     course_payment: true,
-    course_database_connected: Boolean(trivoxDb)
+
+    course_database_connected:
+      Boolean(trivoxDb),
+
+    supabase_key_type:
+      supabaseKeyInfo.type,
+
+    supabase_key_role:
+      supabaseKeyInfo.role
   });
 });
 
 /* =========================================
-   7. EXISTING DYNAMIC PAYMENT
+   8. EXISTING DYNAMIC PAYMENT
+
    POST /api/razorpay/create-order
 ========================================= */
 
@@ -310,14 +495,18 @@ app.post(
       ) {
         return res.status(400).json({
           success: false,
-          message: "Please enter a valid amount"
+          message:
+            "Please enter a valid amount"
         });
       }
 
-      const paymentAmount = Number(amount);
+      const paymentAmount =
+        Number(amount);
 
       if (
-        !Number.isFinite(paymentAmount) ||
+        !Number.isFinite(
+          paymentAmount
+        ) ||
         paymentAmount < 1 ||
         paymentAmount > 1000000
       ) {
@@ -328,24 +517,29 @@ app.post(
         });
       }
 
-      const amountPaise = Math.round(
-        paymentAmount * 100
-      );
+      const amountPaise =
+        Math.round(
+          paymentAmount * 100
+        );
 
       if (
         Math.abs(
-          paymentAmount * 100 - amountPaise
+          paymentAmount * 100 -
+          amountPaise
         ) > 0.000001
       ) {
         return res.status(400).json({
           success: false,
-          message: "Only two decimal places allowed"
+          message:
+            "Only two decimal places allowed"
         });
       }
 
       const receipt =
         "CZ_" +
-        crypto.randomBytes(10).toString("hex");
+        crypto
+          .randomBytes(10)
+          .toString("hex");
 
       const order =
         await razorpay.orders.create({
@@ -356,7 +550,8 @@ app.post(
 
           notes: {
             application: "CEZOO",
-            payment_type: "Dynamic Amount",
+            payment_type:
+              "Dynamic Amount",
             receipt
           }
         });
@@ -365,20 +560,30 @@ app.post(
         "DYNAMIC ORDER CREATED",
         {
           order_id: order.id,
-          amount: amountPaise / 100
+          amount:
+            amountPaise / 100
         }
       );
 
       return res.status(201).json({
         success: true,
+
         key: KEY_ID,
+
         order_id: order.id,
+
         amount: order.amount,
-        amount_rupees: amountPaise / 100,
+
+        amount_rupees:
+          amountPaise / 100,
+
         currency: "INR",
         receipt,
+
         name: "CEZOO",
-        description: "CEZOO Payment"
+
+        description:
+          "CEZOO Payment"
       });
 
     } catch (error) {
@@ -389,14 +594,16 @@ app.post(
 
       return res.status(500).json({
         success: false,
-        message: "Unable to create Razorpay order"
+        message:
+          "Unable to create Razorpay order"
       });
     }
   }
 );
 
 /* =========================================
-   8. EXISTING PAYMENT VERIFICATION
+   9. EXISTING PAYMENT VERIFICATION
+
    POST /api/razorpay/verify
 ========================================= */
 
@@ -412,13 +619,20 @@ app.post(
       } = req.body || {};
 
       if (
-        !validOrderId(razorpay_order_id) ||
-        !validPaymentId(razorpay_payment_id) ||
-        !validSignature(razorpay_signature)
+        !validOrderId(
+          razorpay_order_id
+        ) ||
+        !validPaymentId(
+          razorpay_payment_id
+        ) ||
+        !validSignature(
+          razorpay_signature
+        )
       ) {
         return res.status(400).json({
           success: false,
-          message: "Invalid payment details"
+          message:
+            "Invalid payment details"
         });
       }
 
@@ -434,7 +648,8 @@ app.post(
       if (!valid) {
         return res.status(400).json({
           success: false,
-          message: "Payment signature mismatch"
+          message:
+            "Payment signature mismatch"
         });
       }
 
@@ -448,17 +663,25 @@ app.post(
           razorpay_order_id
         );
 
-      if (payment.order_id !== order.id) {
+      if (
+        payment.order_id !==
+        order.id
+      ) {
         return res.status(400).json({
           success: false,
-          message: "Payment order mismatch"
+          message:
+            "Payment order mismatch"
         });
       }
 
-      if (payment.amount !== order.amount) {
+      if (
+        payment.amount !==
+        order.amount
+      ) {
         return res.status(400).json({
           success: false,
-          message: "Payment amount mismatch"
+          message:
+            "Payment amount mismatch"
         });
       }
 
@@ -468,15 +691,20 @@ app.post(
       ) {
         return res.status(400).json({
           success: false,
-          message: "Invalid currency"
+          message:
+            "Invalid currency"
         });
       }
 
-      if (payment.status !== "captured") {
+      if (
+        payment.status !==
+        "captured"
+      ) {
         return res.status(202).json({
           success: false,
           status: payment.status,
-          message: "Payment confirmation pending"
+          message:
+            "Payment confirmation pending"
         });
       }
 
@@ -485,20 +713,31 @@ app.post(
         {
           order_id: order.id,
           payment_id: payment.id,
-          amount: payment.amount / 100,
+          amount:
+            payment.amount / 100,
           method: payment.method
         }
       );
 
       return res.status(200).json({
         success: true,
-        message: "Payment Successful!",
+
+        message:
+          "Payment Successful!",
+
         status: "captured",
+
         order_id: order.id,
+
         payment_id: payment.id,
-        amount: payment.amount / 100,
+
+        amount:
+          payment.amount / 100,
+
         currency: "INR",
-        payment_method: payment.method
+
+        payment_method:
+          payment.method
       });
 
     } catch (error) {
@@ -509,14 +748,16 @@ app.post(
 
       return res.status(500).json({
         success: false,
-        message: "Unable to verify payment"
+        message:
+          "Unable to verify payment"
       });
     }
   }
 );
 
 /* =========================================
-   9. EXISTING PAYMENT STATUS
+   10. EXISTING PAYMENT STATUS
+
    GET /api/razorpay/status/:orderId
 ========================================= */
 
@@ -528,10 +769,13 @@ app.get(
       const orderId =
         req.params.orderId;
 
-      if (!validOrderId(orderId)) {
+      if (
+        !validOrderId(orderId)
+      ) {
         return res.status(400).json({
           success: false,
-          message: "Invalid order ID"
+          message:
+            "Invalid order ID"
         });
       }
 
@@ -548,22 +792,30 @@ app.get(
       const captured =
         payments.items.find(
           payment =>
-            payment.status === "captured" &&
-            payment.order_id === orderId &&
-            payment.amount === order.amount &&
-            payment.currency === order.currency
+            payment.status ===
+              "captured" &&
+            payment.order_id ===
+              orderId &&
+            payment.amount ===
+              order.amount &&
+            payment.currency ===
+              order.currency
         );
 
       return res.json({
         success: true,
+
         order_id: order.id,
 
         status: captured
           ? "captured"
           : order.status,
 
-        amount: order.amount / 100,
-        currency: order.currency,
+        amount:
+          order.amount / 100,
+
+        currency:
+          order.currency,
 
         payment_id:
           captured?.id || null,
@@ -580,14 +832,15 @@ app.get(
 
       return res.status(500).json({
         success: false,
-        message: "Unable to check payment status"
+        message:
+          "Unable to check payment status"
       });
     }
   }
 );
 
 /* =========================================
-   10. TRIVOX COURSE PAYMENT HELPER
+   11. TRIVOX PAYMENT SAVE HELPER
 ========================================= */
 
 async function recordCapturedCoursePayment(
@@ -595,40 +848,62 @@ async function recordCapturedCoursePayment(
   paymentId
 ) {
   if (!trivoxDb) {
-    throw new Error("Supabase not configured");
+    throw new Error(
+      "Supabase not configured"
+    );
   }
 
   const {
     data: transaction,
     error: findError
   } = await trivoxDb
-    .from("trivox_course_payments")
+    .from(
+      "trivox_course_payments"
+    )
     .select("*")
-    .eq("razorpay_order_id", orderId)
+    .eq(
+      "razorpay_order_id",
+      orderId
+    )
     .single();
 
-  if (findError || !transaction) {
+  if (
+    findError ||
+    !transaction
+  ) {
     throw new Error(
       "Course payment order not found"
     );
   }
 
-  const [payment, order] =
-    await Promise.all([
-      razorpay.payments.fetch(paymentId),
-      razorpay.orders.fetch(orderId)
-    ]);
+  const [
+    payment,
+    order
+  ] = await Promise.all([
+    razorpay.payments.fetch(
+      paymentId
+    ),
+
+    razorpay.orders.fetch(
+      orderId
+    )
+  ]);
 
   if (
-    payment.status !== "captured" ||
-    payment.order_id !== orderId ||
-    order.id !== orderId ||
+    payment.status !==
+      "captured" ||
+    payment.order_id !==
+      orderId ||
+    order.id !==
+      orderId ||
     payment.amount !==
       transaction.amount_paise ||
     order.amount !==
       transaction.amount_paise ||
-    payment.currency !== "INR" ||
-    order.currency !== "INR"
+    payment.currency !==
+      "INR" ||
+    order.currency !==
+      "INR"
   ) {
     throw new Error(
       "Payment not captured or amount mismatch"
@@ -638,15 +913,25 @@ async function recordCapturedCoursePayment(
   const {
     error: updateError
   } = await trivoxDb
-    .from("trivox_course_payments")
+    .from(
+      "trivox_course_payments"
+    )
     .update({
       status: "captured",
-      razorpay_payment_id: payment.id,
-      payment_method: payment.method,
+
+      razorpay_payment_id:
+        payment.id,
+
+      payment_method:
+        payment.method,
+
       captured_at:
         new Date().toISOString()
     })
-    .eq("razorpay_order_id", orderId);
+    .eq(
+      "razorpay_order_id",
+      orderId
+    );
 
   if (updateError) {
     throw updateError;
@@ -655,14 +940,20 @@ async function recordCapturedCoursePayment(
   console.log(
     "TRIVOX COURSE PAYMENT SAVED",
     {
-      course_id: transaction.course_id,
-      order_id: orderId,
-      payment_id: payment.id
+      course_id:
+        transaction.course_id,
+
+      order_id:
+        orderId,
+
+      payment_id:
+        payment.id
     }
   );
 
   return {
     success: true,
+
     status: "captured",
 
     course_id:
@@ -671,8 +962,11 @@ async function recordCapturedCoursePayment(
     course_title:
       transaction.course_title,
 
-    order_id: order.id,
-    payment_id: payment.id,
+    order_id:
+      order.id,
+
+    payment_id:
+      payment.id,
 
     amount:
       payment.amount / 100,
@@ -685,9 +979,9 @@ async function recordCapturedCoursePayment(
 }
 
 /* =========================================
-   11. CREATE TRIVOX COURSE ORDER
+   12. CREATE TRIVOX COURSE ORDER
 
-   POST
+   POST:
    /api/razorpay/course/create-order
 
    BODY:
@@ -701,12 +995,16 @@ app.post(
 
   async (req, res) => {
     try {
-      if (!databaseReady(res)) {
+      if (
+        !databaseReady(res)
+      ) {
         return;
       }
 
       const courseId =
-        Number(req.body?.course_id);
+        Number(
+          req.body?.course_id
+        );
 
       console.log(
         "TRIVOX ENROLL COURSE ID:",
@@ -714,20 +1012,23 @@ app.post(
       );
 
       if (
-        !Number.isSafeInteger(courseId) ||
+        !Number.isSafeInteger(
+          courseId
+        ) ||
         courseId < 1
       ) {
         return res.status(400).json({
           success: false,
-          message: "Invalid course ID"
+          message:
+            "Invalid course ID"
         });
       }
 
       /*
-        Price comes from Supabase.
+        Price is always fetched
+        from Supabase.
 
-        Do not accept course price
-        from the browser.
+        Never trust browser price.
       */
 
       const {
@@ -738,10 +1039,16 @@ app.post(
         .select(
           "id,title,price,status"
         )
-        .eq("id", courseId)
+        .eq(
+          "id",
+          courseId
+        )
         .single();
 
-      if (courseError || !course) {
+      if (
+        courseError ||
+        !course
+      ) {
         console.error(
           "Course lookup error:",
           courseError?.message
@@ -749,71 +1056,96 @@ app.post(
 
         return res.status(404).json({
           success: false,
-          message: "Course not found"
+          message:
+            "Course not found"
         });
       }
 
-      /* =================================
-         COURSE STATUS FIX
-
-         Handles:
-         "available"
-         "Available"
-         " available "
-      ================================= */
+      /*
+        Accepts:
+        available
+        Available
+        " available "
+      */
 
       const courseStatus =
-        String(course.status ?? "")
+        String(
+          course.status ?? ""
+        )
           .trim()
           .toLowerCase();
 
       console.log(
         "TRIVOX COURSE STATUS CHECK",
         {
-          requested_course_id: courseId,
-          database_course_id: course.id,
-          status: courseStatus
+          requested_course_id:
+            courseId,
+
+          database_course_id:
+            course.id,
+
+          status:
+            courseStatus
         }
       );
 
-      if (courseStatus !== "available") {
+      if (
+        courseStatus !==
+        "available"
+      ) {
         return res.status(400).json({
           success: false,
-          message: "Course unavailable"
+          message:
+            "Course unavailable"
         });
       }
 
       const rupees =
-        Number(course.price);
+        Number(
+          course.price
+        );
 
       const amountPaise =
-        Math.round(rupees * 100);
+        Math.round(
+          rupees * 100
+        );
 
       if (
-        !Number.isFinite(rupees) ||
+        !Number.isFinite(
+          rupees
+        ) ||
         amountPaise < 100 ||
         amountPaise > 100000000 ||
         Math.abs(
-          rupees * 100 - amountPaise
+          rupees * 100 -
+          amountPaise
         ) > 0.000001
       ) {
         return res.status(400).json({
           success: false,
-          message: "Invalid course price"
+          message:
+            "Invalid course price"
         });
       }
 
       const receipt =
         "TV_" +
-        crypto.randomBytes(9)
+        crypto
+          .randomBytes(9)
           .toString("hex");
 
       const order =
         await razorpay.orders.create({
-          amount: amountPaise,
-          currency: "INR",
+          amount:
+            amountPaise,
+
+          currency:
+            "INR",
+
           receipt,
-          partial_payment: false,
+
+          partial_payment:
+            false,
 
           notes: {
             application:
@@ -825,16 +1157,20 @@ app.post(
         });
 
       /*
-        Save created order BEFORE
-        returning it to frontend.
+        Save the course order
+        BEFORE sending Razorpay
+        checkout details to HTML.
       */
 
       const {
         error: saveError
       } = await trivoxDb
-        .from("trivox_course_payments")
+        .from(
+          "trivox_course_payments"
+        )
         .insert({
-          course_id: course.id,
+          course_id:
+            course.id,
 
           course_title:
             course.title,
@@ -842,41 +1178,83 @@ app.post(
           amount_paise:
             amountPaise,
 
-          currency: "INR",
+          currency:
+            "INR",
 
           razorpay_order_id:
             order.id,
 
-          status: "created"
+          status:
+            "created"
         });
 
       if (saveError) {
         console.error(
-          "Course order save error:",
-          saveError.message
+          "COURSE ORDER SAVE ERROR",
+          {
+            message:
+              saveError.message,
+
+            code:
+              saveError.code,
+
+            details:
+              saveError.details,
+
+            hint:
+              saveError.hint,
+
+            key_type:
+              supabaseKeyInfo.type,
+
+            key_role:
+              supabaseKeyInfo.role,
+
+            course_id:
+              course.id
+          }
         );
+
+        const rlsBlocked =
+          saveError.code ===
+            "42501" ||
+          /row-level security/i.test(
+            saveError.message || ""
+          );
 
         return res.status(500).json({
           success: false,
 
-          message:
-            "Unable to save course order. Do not pay."
+          message: rlsBlocked
+            ? (
+                "Supabase RLS blocked backend insert. " +
+                "Check Render service-role/secret key."
+              )
+            : (
+                "Unable to save course order. Do not pay."
+              )
         });
       }
 
       console.log(
         "TRIVOX COURSE ORDER CREATED",
         {
-          course_id: course.id,
-          order_id: order.id,
-          amount: amountPaise / 100
+          course_id:
+            course.id,
+
+          order_id:
+            order.id,
+
+          amount:
+            amountPaise / 100
         }
       );
 
       return res.status(201).json({
         success: true,
 
-        key: KEY_ID,
+        key:
+          KEY_ID,
 
         order_id:
           order.id,
@@ -902,7 +1280,6 @@ app.post(
 
       return res.status(500).json({
         success: false,
-
         message:
           "Unable to create course payment"
       });
@@ -911,9 +1288,9 @@ app.post(
 );
 
 /* =========================================
-   12. VERIFY TRIVOX COURSE PAYMENT
+   13. VERIFY TRIVOX COURSE PAYMENT
 
-   POST
+   POST:
    /api/razorpay/course/verify
 ========================================= */
 
@@ -922,7 +1299,9 @@ app.post(
 
   async (req, res) => {
     try {
-      if (!databaseReady(res)) {
+      if (
+        !databaseReady(res)
+      ) {
         return;
       }
 
@@ -945,7 +1324,6 @@ app.post(
       ) {
         return res.status(400).json({
           success: false,
-
           message:
             "Invalid payment details"
         });
@@ -957,13 +1335,13 @@ app.post(
           razorpay_payment_id,
 
         razorpay_signature,
+
         KEY_SECRET
       );
 
       if (!valid) {
         return res.status(400).json({
           success: false,
-
           message:
             "Payment signature mismatch"
         });
@@ -996,7 +1374,7 @@ app.post(
 );
 
 /* =========================================
-   13. ERROR HANDLER
+   14. ERROR HANDLER
 ========================================= */
 
 app.use(
@@ -1023,7 +1401,7 @@ app.use(
 );
 
 /* =========================================
-   14. START SERVER
+   15. START SERVER
 ========================================= */
 
 app.listen(
@@ -1061,6 +1439,16 @@ app.listen(
       trivoxDb
         ? "CONFIGURED"
         : "NOT CONFIGURED"
+    );
+
+    console.log(
+      "SUPABASE KEY TYPE:",
+      supabaseKeyInfo.type
+    );
+
+    console.log(
+      "SUPABASE KEY ROLE:",
+      supabaseKeyInfo.role
     );
 
     console.log(
