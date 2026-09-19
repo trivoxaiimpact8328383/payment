@@ -73,9 +73,7 @@ app.use(
         return callback(null, true);
       }
 
-      return callback(
-        new Error("CORS not allowed")
-      );
+      return callback(new Error("CORS not allowed"));
     },
 
     methods: ["GET", "POST", "OPTIONS"],
@@ -137,15 +135,14 @@ function databaseReady(res) {
 
   res.status(503).json({
     success: false,
-    message:
-      "Supabase environment variables missing"
+    message: "Supabase environment variables missing"
   });
 
   return false;
 }
 
 /* =========================================
-   4. RAZORPAY WEBHOOK
+   4. WEBHOOK
    MUST BE BEFORE express.json()
 ========================================= */
 
@@ -190,28 +187,22 @@ app.post(
           method: payment?.method
         });
 
-        /*
-          Save Trivox course payment if the order
-          belongs to the Trivox course table.
-
-          Existing dynamic-payment orders are
-          not changed.
-        */
-
         if (
           trivoxDb &&
           payment?.order_id &&
           payment?.id
         ) {
-          const { data: courseTx, error: lookupError } =
-            await trivoxDb
-              .from("trivox_course_payments")
-              .select("razorpay_order_id")
-              .eq(
-                "razorpay_order_id",
-                payment.order_id
-              )
-              .maybeSingle();
+          const {
+            data: courseTx,
+            error: lookupError
+          } = await trivoxDb
+            .from("trivox_course_payments")
+            .select("razorpay_order_id")
+            .eq(
+              "razorpay_order_id",
+              payment.order_id
+            )
+            .maybeSingle();
 
           if (lookupError) {
             console.error(
@@ -348,8 +339,7 @@ app.post(
       ) {
         return res.status(400).json({
           success: false,
-          message:
-            "Only two decimal places allowed"
+          message: "Only two decimal places allowed"
         });
       }
 
@@ -399,8 +389,7 @@ app.post(
 
       return res.status(500).json({
         success: false,
-        message:
-          "Unable to create Razorpay order"
+        message: "Unable to create Razorpay order"
       });
     }
   }
@@ -445,8 +434,7 @@ app.post(
       if (!valid) {
         return res.status(400).json({
           success: false,
-          message:
-            "Payment signature mismatch"
+          message: "Payment signature mismatch"
         });
       }
 
@@ -460,18 +448,14 @@ app.post(
           razorpay_order_id
         );
 
-      if (
-        payment.order_id !== order.id
-      ) {
+      if (payment.order_id !== order.id) {
         return res.status(400).json({
           success: false,
           message: "Payment order mismatch"
         });
       }
 
-      if (
-        payment.amount !== order.amount
-      ) {
+      if (payment.amount !== order.amount) {
         return res.status(400).json({
           success: false,
           message: "Payment amount mismatch"
@@ -492,8 +476,7 @@ app.post(
         return res.status(202).json({
           success: false,
           status: payment.status,
-          message:
-            "Payment confirmation pending"
+          message: "Payment confirmation pending"
         });
       }
 
@@ -526,8 +509,7 @@ app.post(
 
       return res.status(500).json({
         success: false,
-        message:
-          "Unable to verify payment"
+        message: "Unable to verify payment"
       });
     }
   }
@@ -598,8 +580,7 @@ app.get(
 
       return res.status(500).json({
         success: false,
-        message:
-          "Unable to check payment status"
+        message: "Unable to check payment status"
       });
     }
   }
@@ -614,9 +595,7 @@ async function recordCapturedCoursePayment(
   paymentId
 ) {
   if (!trivoxDb) {
-    throw new Error(
-      "Supabase not configured"
-    );
+    throw new Error("Supabase not configured");
   }
 
   const {
@@ -713,7 +692,7 @@ async function recordCapturedCoursePayment(
 
    BODY:
    {
-     "course_id": 1
+     "course_id": 6
    }
 ========================================= */
 
@@ -728,6 +707,11 @@ app.post(
 
       const courseId =
         Number(req.body?.course_id);
+
+      console.log(
+        "TRIVOX ENROLL COURSE ID:",
+        courseId
+      );
 
       if (
         !Number.isSafeInteger(courseId) ||
@@ -769,11 +753,30 @@ app.post(
         });
       }
 
-      if (
-        String(
-          course.status || ""
-        ).toLowerCase() !== "available"
-      ) {
+      /* =================================
+         COURSE STATUS FIX
+
+         Handles:
+         "available"
+         "Available"
+         " available "
+      ================================= */
+
+      const courseStatus =
+        String(course.status ?? "")
+          .trim()
+          .toLowerCase();
+
+      console.log(
+        "TRIVOX COURSE STATUS CHECK",
+        {
+          requested_course_id: courseId,
+          database_course_id: course.id,
+          status: courseStatus
+        }
+      );
+
+      if (courseStatus !== "available") {
         return res.status(400).json({
           success: false,
           message: "Course unavailable"
@@ -912,13 +915,6 @@ app.post(
 
    POST
    /api/razorpay/course/verify
-
-   BODY:
-   {
-     "razorpay_order_id": "...",
-     "razorpay_payment_id": "...",
-     "razorpay_signature": "..."
-   }
 ========================================= */
 
 app.post(
