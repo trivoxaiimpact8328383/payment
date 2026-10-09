@@ -1374,6 +1374,170 @@ app.post(
 );
 
 /* =========================================
+   TRIVOX QUIZ PAYMENT — FIXED ₹200
+
+   POST /api/razorpay/quiz/create-order
+   POST /api/razorpay/quiz/verify
+========================================= */
+
+// CREATE QUIZ ORDER
+app.post(
+  "/api/razorpay/quiz/create-order",
+  async (req, res) => {
+    try {
+      const order = await razorpay.orders.create({
+        amount: 20000, // Fixed ₹200
+        currency: "INR",
+        receipt:
+          "TQ_" +
+          crypto.randomBytes(9).toString("hex"),
+        partial_payment: false,
+        notes: {
+          application: "Trivox AI Impact",
+          purpose: "quiz",
+          product: "quiz_access"
+        }
+      });
+
+      console.log("TRIVOX QUIZ ORDER CREATED", {
+        order_id: order.id,
+        amount: order.amount
+      });
+
+      return res.status(201).json({
+        success: true,
+        key: KEY_ID,
+        order_id: order.id,
+        amount: order.amount,
+        currency: order.currency
+      });
+
+    } catch (error) {
+      console.error(
+        "QUIZ CREATE ORDER ERROR:",
+        error.message
+      );
+
+      return res.status(500).json({
+        success: false,
+        message: "Unable to create quiz payment order"
+      });
+    }
+  }
+);
+
+
+// VERIFY QUIZ PAYMENT
+app.post(
+  "/api/razorpay/quiz/verify",
+  async (req, res) => {
+    try {
+      const {
+        razorpay_order_id,
+        razorpay_payment_id,
+        razorpay_signature
+      } = req.body || {};
+
+      if (
+        !validOrderId(razorpay_order_id) ||
+        !validPaymentId(razorpay_payment_id) ||
+        !validSignature(razorpay_signature)
+      ) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid payment details"
+        });
+      }
+
+      // Verify Razorpay checkout signature
+      const signatureValid = verifyHmac(
+        razorpay_order_id + "|" + razorpay_payment_id,
+        razorpay_signature,
+        KEY_SECRET
+      );
+
+      if (!signatureValid) {
+        return res.status(400).json({
+          success: false,
+          message: "Payment signature mismatch"
+        });
+      }
+
+      // Fetch actual order and payment from Razorpay
+      const [order, payment] = await Promise.all([
+        razorpay.orders.fetch(razorpay_order_id),
+        razorpay.payments.fetch(razorpay_payment_id)
+      ]);
+
+      // Confirm this order was created for the quiz
+      if (
+        order.notes?.purpose !== "quiz" ||
+        order.notes?.product !== "quiz_access" ||
+        order.amount !== 20000 ||
+        order.currency !== "INR"
+      ) {
+        return res.status(400).json({
+          success: false,
+          message: "This is not a valid quiz order"
+        });
+      }
+
+      // Confirm payment belongs to this exact order
+      if (
+        payment.order_id !== order.id ||
+        payment.amount !== 20000 ||
+        payment.currency !== "INR"
+      ) {
+        return res.status(400).json({
+          success: false,
+          message: "Payment details do not match"
+        });
+      }
+
+      // Do not unlock quiz until payment is captured
+      if (payment.status !== "captured") {
+        return res.status(202).json({
+          success: false,
+          status: payment.status,
+          quiz_access: false,
+          message: "Payment is not captured yet"
+        });
+      }
+
+      console.log("TRIVOX QUIZ PAYMENT VERIFIED", {
+        order_id: order.id,
+        payment_id: payment.id,
+        amount: payment.amount / 100
+      });
+
+      return res.status(200).json({
+        success: true,
+        status: "captured",
+        quiz_access: true,
+        quiz_url: "quiz.html",
+        order_id: order.id,
+        payment_id: payment.id,
+        amount: 200,
+        currency: "INR"
+      });
+
+    } catch (error) {
+      console.error(
+        "QUIZ VERIFY ERROR:",
+        error.message
+      );
+
+      return res.status(500).json({
+        success: false,
+        quiz_access: false,
+        message: "Unable to verify quiz payment"
+      });
+    }
+  }
+);
+
+
+/* =========================================
    14. ERROR HANDLER
 ========================================= */
 
