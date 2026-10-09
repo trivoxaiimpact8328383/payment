@@ -182,6 +182,10 @@ const trivoxDb =
    3. CORS
 ========================================= */
 
+/* =========================================
+   3. CORS
+========================================= */
+
 const allowedOrigins = [
   "https://trivoxaiimpact.com",
   "https://www.trivoxaiimpact.com"
@@ -191,9 +195,7 @@ if (process.env.FRONTEND_URL) {
   allowedOrigins.push(
     ...process.env.FRONTEND_URL
       .split(",")
-      .map(url =>
-        url.trim().replace(/\/$/, "")
-      )
+      .map(url => url.trim().replace(/\/+$/, ""))
       .filter(Boolean)
   );
 }
@@ -208,22 +210,14 @@ app.use(
         return callback(null, true);
       }
 
-      return callback(
-        new Error("CORS not allowed")
-      );
+      console.error("CORS not allowed:", origin);
+      return callback(new Error("CORS not allowed"));
     },
-
-    methods: [
-      "GET",
-      "POST",
-      "OPTIONS"
-    ],
-
+    methods: ["GET", "POST", "OPTIONS"],
     allowedHeaders: [
       "Content-Type",
       "Authorization"
     ],
-
     optionsSuccessStatus: 204
   })
 );
