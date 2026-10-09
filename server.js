@@ -1382,7 +1382,7 @@ app.post(
   async (req, res) => {
     try {
       const order = await razorpay.orders.create({
-        amount: 10, // Fixed ₹200
+        amount: 20000, // Fixed ₹200
         currency: "INR",
         receipt:
           "TQ_" +
