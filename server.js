@@ -1513,7 +1513,7 @@ app.post(
         quiz_url: "quiz.html",
         order_id: order.id,
         payment_id: payment.id,
-        amount: 200,
+        amount: 0.1,
         currency: "INR"
       });
 
