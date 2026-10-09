@@ -1382,7 +1382,7 @@ app.post(
   async (req, res) => {
     try {
       const order = await razorpay.orders.create({
-        amount: 10, // Fixed ₹200
+        amount: 20000, // Fixed ₹200
         currency: "INR",
         receipt:
           "TQ_" +
@@ -1469,7 +1469,7 @@ app.post(
       if (
         order.notes?.purpose !== "quiz" ||
         order.notes?.product !== "quiz_access" ||
-        order.amount !== 10 ||
+        order.amount !== 20000 ||
         order.currency !== "INR"
       ) {
         return res.status(400).json({
@@ -1481,7 +1481,7 @@ app.post(
       // Confirm payment belongs to this exact order
       if (
         payment.order_id !== order.id ||
-        payment.amount !== 10 ||
+        payment.amount !== 20000 ||
         payment.currency !== "INR"
       ) {
         return res.status(400).json({
@@ -1513,7 +1513,7 @@ app.post(
         quiz_url: "quiz.html",
         order_id: order.id,
         payment_id: payment.id,
-        amount: 0.1,
+        amount: 200,
         currency: "INR"
       });
 
